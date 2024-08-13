@@ -30,6 +30,8 @@
 #endif /* CONFIG_EXAMPLE_PROV_TRANSPORT_SOFTAP */
 #include "qrcode.h"
 
+#include "myApp.h"
+
 static const char *TAG = "app";
 
 #if CONFIG_EXAMPLE_PROV_SECURITY_VERSION_2
@@ -514,8 +516,7 @@ void app_main(void)
     }
 #else
      while (1) {
-         ESP_LOGI(TAG, "Hello World2!");
-         vTaskDelay(1000 / portTICK_PERIOD_MS);
+        func();
      }
 #endif
 
