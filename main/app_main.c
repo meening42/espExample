@@ -1,12 +1,3 @@
-/* Wi-Fi Provisioning Manager Example
-
-   This example code is in the Public Domain (or CC0 licensed, at your option.)
-
-   Unless required by applicable law or agreed to in writing, this
-   software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-   CONDITIONS OF ANY KIND, either express or implied.
-*/
-
 #include <stdio.h>
 #include <string.h>
 
@@ -20,17 +11,30 @@
 #include <nvs_flash.h>
 
 #include <wifi_provisioning/manager.h>
-
-#ifdef CONFIG_EXAMPLE_PROV_TRANSPORT_BLE
-#include <wifi_provisioning/scheme_ble.h>
-#endif /* CONFIG_EXAMPLE_PROV_TRANSPORT_BLE */
-
-#ifdef CONFIG_EXAMPLE_PROV_TRANSPORT_SOFTAP
 #include <wifi_provisioning/scheme_softap.h>
-#endif /* CONFIG_EXAMPLE_PROV_TRANSPORT_SOFTAP */
 #include "qrcode.h"
 
-#include "myApp.h"
+#include "mqtt_client.h"
+#include "driver/gpio.h"
+#include "driver/temperature_sensor.h"
+
+extern const uint8_t client_cert_pem_start[] asm("_binary_client_crt_start");
+extern const uint8_t client_cert_pem_end[] asm("_binary_client_crt_end");
+extern const uint8_t client_key_pem_start[] asm("_binary_client_key_start");
+extern const uint8_t client_key_pem_end[] asm("_binary_client_key_end");
+extern const uint8_t server_cert_pem_start[] asm("_binary_mosquitto_org_crt_start");
+extern const uint8_t server_cert_pem_end[] asm("_binary_mosquitto_org_crt_end");
+
+
+static void mqtt_app_start(void);
+
+typedef enum  {
+  TRIGGER_BTN,
+  TRIGGER_TIMER,
+  TRIGGER_MQTT_REQUEST
+}triggerSrc_t;
+
+static QueueHandle_t evt_queue = NULL;
 
 static const char *TAG = "app";
 
@@ -167,14 +171,12 @@ static void event_handler(void* arg, esp_event_base_t event_base,
                 ESP_LOGI(TAG, "Disconnected. Connecting to the AP again...");
                 esp_wifi_connect();
                 break;
-#ifdef CONFIG_EXAMPLE_PROV_TRANSPORT_SOFTAP
             case WIFI_EVENT_AP_STACONNECTED:
                 ESP_LOGI(TAG, "SoftAP transport: Connected!");
                 break;
             case WIFI_EVENT_AP_STADISCONNECTED:
                 ESP_LOGI(TAG, "SoftAP transport: Disconnected!");
                 break;
-#endif
             default:
                 break;
         }
@@ -183,19 +185,6 @@ static void event_handler(void* arg, esp_event_base_t event_base,
         ESP_LOGI(TAG, "Connected with IP Address:" IPSTR, IP2STR(&event->ip_info.ip));
         /* Signal main application to continue execution */
         xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_EVENT);
-#ifdef CONFIG_EXAMPLE_PROV_TRANSPORT_BLE
-    } else if (event_base == PROTOCOMM_TRANSPORT_BLE_EVENT) {
-        switch (event_id) {
-            case PROTOCOMM_TRANSPORT_BLE_CONNECTED:
-                ESP_LOGI(TAG, "BLE transport: Connected!");
-                break;
-            case PROTOCOMM_TRANSPORT_BLE_DISCONNECTED:
-                ESP_LOGI(TAG, "BLE transport: Disconnected!");
-                break;
-            default:
-                break;
-        }
-#endif
     } else if (event_base == PROTOCOMM_SECURITY_SESSION_EVENT) {
         switch (event_id) {
             case PROTOCOMM_SECURITY_SESSION_SETUP_OK:
@@ -260,11 +249,8 @@ static void wifi_prov_print_qr(const char *name, const char *username, const cha
     }
     char payload[150] = {0};
     if (pop) {
-#if CONFIG_EXAMPLE_PROV_SECURITY_VERSION_1
-        snprintf(payload, sizeof(payload), "{\"ver\":\"%s\",\"name\":\"%s\"" \
-                    ",\"pop\":\"%s\",\"transport\":\"%s\"}",
-                    PROV_QR_VERSION, name, pop, transport);
-#elif CONFIG_EXAMPLE_PROV_SECURITY_VERSION_2
+
+#ifdef CONFIG_EXAMPLE_PROV_SECURITY_VERSION_2
         snprintf(payload, sizeof(payload), "{\"ver\":\"%s\",\"name\":\"%s\"" \
                     ",\"username\":\"%s\",\"pop\":\"%s\",\"transport\":\"%s\"}",
                     PROV_QR_VERSION, name, username, pop, transport);
@@ -280,6 +266,158 @@ static void wifi_prov_print_qr(const char *name, const char *username, const cha
     esp_qrcode_generate(&cfg, payload);
 #endif /* CONFIG_APP_WIFI_PROV_SHOW_QR */
     ESP_LOGI(TAG, "If QR code is not visible, copy paste the below URL in a browser.\n%s?data=%s", QRCODE_BASE_URL, payload);
+}
+
+
+
+/*
+ * @brief Event handler registered to receive MQTT events
+ *
+ *  This function is called by the MQTT client event loop.
+ *
+ * @param handler_args user data registered to the event.
+ * @param base Event base for the handler(always MQTT Base in this example).
+ * @param event_id The id for the received event.
+ * @param event_data The data for the event, esp_mqtt_event_handle_t.
+ */
+static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
+{
+    ESP_LOGD(TAG, "Event dispatched from event loop base=%s, event_id=%" PRIi32, base, event_id);
+    esp_mqtt_event_handle_t event = event_data;
+    esp_mqtt_client_handle_t client = event->client;
+    int msg_id;
+    switch ((esp_mqtt_event_id_t)event_id) {
+    case MQTT_EVENT_CONNECTED:
+        ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
+        msg_id = esp_mqtt_client_subscribe(client, "/topic/qos0", 0);
+        ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
+
+        msg_id = esp_mqtt_client_subscribe(client, "/topic/qos1", 1);
+        ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
+
+        msg_id = esp_mqtt_client_unsubscribe(client, "/topic/qos1");
+        ESP_LOGI(TAG, "sent unsubscribe successful, msg_id=%d", msg_id);
+        break;
+    case MQTT_EVENT_DISCONNECTED:
+        ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED");
+        break;
+
+    case MQTT_EVENT_SUBSCRIBED:
+        ESP_LOGI(TAG, "MQTT_EVENT_SUBSCRIBED, msg_id=%d", event->msg_id);
+        msg_id = esp_mqtt_client_publish(client, "/topic/qos0", "data", 0, 0, 0);
+        ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
+        break;
+    case MQTT_EVENT_UNSUBSCRIBED:
+        ESP_LOGI(TAG, "MQTT_EVENT_UNSUBSCRIBED, msg_id=%d", event->msg_id);
+        break;
+    case MQTT_EVENT_PUBLISHED:
+        ESP_LOGI(TAG, "MQTT_EVENT_PUBLISHED, msg_id=%d", event->msg_id);
+        break;
+    case MQTT_EVENT_DATA:
+        ESP_LOGI(TAG, "MQTT_EVENT_DATA");
+        printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
+        printf("DATA=%.*s\r\n", event->data_len, event->data);
+        if(strcmp (event->topic,"tempRequest") == 0){
+            triggerSrc_t trigger = TRIGGER_MQTT_REQUEST;
+            xQueueSendFromISR(evt_queue, &trigger, NULL);
+        }
+        break;
+    case MQTT_EVENT_ERROR:
+        ESP_LOGI(TAG, "MQTT_EVENT_ERROR");
+        if (event->error_handle->error_type == MQTT_ERROR_TYPE_TCP_TRANSPORT) {
+            //log_error_if_nonzero("reported from esp-tls", event->error_handle->esp_tls_last_esp_err);
+            //log_error_if_nonzero("reported from tls stack", event->error_handle->esp_tls_stack_err);
+            //log_error_if_nonzero("captured as transport's socket errno",  event->error_handle->esp_transport_sock_errno);
+            ESP_LOGI(TAG, "Last errno string (%s)", strerror(event->error_handle->esp_transport_sock_errno));
+
+        }
+        break;
+    default:
+        ESP_LOGI(TAG, "Other event id:%d", event->event_id);
+        break;
+    }
+}
+
+ esp_mqtt_client_handle_t client;
+ temperature_sensor_handle_t temp_sensor = NULL;
+
+
+
+TimerHandle_t tmr;
+int id = 1;
+int interval = 5000;
+
+void ping( TimerHandle_t xTimer )
+{
+    triggerSrc_t trigger = TRIGGER_TIMER;
+    xQueueSendFromISR(evt_queue, &trigger, NULL);
+}
+
+static void myTask(void* arg)
+{
+    triggerSrc_t src;
+    float tsens_value;
+    temperature_sensor_config_t temp_sensor_config = TEMPERATURE_SENSOR_CONFIG_DEFAULT(10, 50);
+    ESP_ERROR_CHECK(temperature_sensor_install(&temp_sensor_config, &temp_sensor));
+    ESP_LOGI(TAG, "Enable temperature sensor");
+    ESP_ERROR_CHECK(temperature_sensor_enable(temp_sensor));
+    char buffer[64];
+    snprintf(buffer, sizeof(buffer), "My task started\n");
+    printf("%s",buffer);
+    for (;;) {
+        if (xQueueReceive(evt_queue, &src, portMAX_DELAY)) {
+            temperature_sensor_get_celsius(temp_sensor, &tsens_value);
+            switch(src){
+                case TRIGGER_BTN:                   
+                    snprintf(buffer, sizeof(buffer), "btn pressed, temp = %.1f\n", tsens_value);
+                    break;
+                case TRIGGER_TIMER:
+                    snprintf(buffer, sizeof(buffer), "timer 5s, temp = %.1f\n", tsens_value);
+                    break;
+                case TRIGGER_MQTT_REQUEST:   
+                    snprintf(buffer, sizeof(buffer), "mqtt req., temp = %.1f\n", tsens_value);
+                    break;
+                default:
+                    snprintf(buffer, sizeof(buffer), "unknown trigger, temp = %.1f\n", tsens_value);
+                    break;
+            }
+            printf("%s",buffer);
+            esp_mqtt_client_publish(client, "temperature", buffer, 0, 1, 1);
+        }
+    }
+}
+
+
+#define ESP_INTR_FLAG_DEFAULT 0
+#define GPIO_INPUT_IO_0     9
+#define GPIO_INPUT_PIN_SEL  (1ULL<<GPIO_INPUT_IO_0) 
+
+static void IRAM_ATTR gpio_isr_handler(void* arg)
+{
+    triggerSrc_t trigger = TRIGGER_BTN;
+    xQueueSendFromISR(evt_queue, &trigger, NULL);
+}
+
+void  initBtnGpio(){
+   //zero-initialize the config structure.
+    gpio_config_t io_conf = {};
+    //interrupt of rising edge
+    io_conf.intr_type = GPIO_INTR_POSEDGE;
+    //bit mask of the pins, use GPIO4/5 here
+    io_conf.pin_bit_mask = GPIO_INPUT_PIN_SEL;
+    //set as input mode
+    io_conf.mode = GPIO_MODE_INPUT;
+    //enable pull-up mode
+    io_conf.pull_up_en = 1;
+    gpio_config(&io_conf);
+
+    //change gpio interrupt type for one pin
+    gpio_set_intr_type(GPIO_INPUT_IO_0, GPIO_INTR_POSEDGE);
+
+    //install gpio isr service
+    gpio_install_isr_service(ESP_INTR_FLAG_DEFAULT);
+    //hook isr handler for specific gpio pin
+    gpio_isr_handler_add(GPIO_INPUT_IO_0, gpio_isr_handler, (void*) GPIO_INPUT_IO_0);
 }
 
 void app_main(void)
@@ -304,18 +442,13 @@ void app_main(void)
 
     /* Register our event handler for Wi-Fi, IP and Provisioning related events */
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_PROV_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL));
-#ifdef CONFIG_EXAMPLE_PROV_TRANSPORT_BLE
-    ESP_ERROR_CHECK(esp_event_handler_register(PROTOCOMM_TRANSPORT_BLE_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL));
-#endif
     ESP_ERROR_CHECK(esp_event_handler_register(PROTOCOMM_SECURITY_SESSION_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL));
 
     /* Initialize Wi-Fi including netif with default config */
     esp_netif_create_default_wifi_sta();
-#ifdef CONFIG_EXAMPLE_PROV_TRANSPORT_SOFTAP
     esp_netif_create_default_wifi_ap();
-#endif /* CONFIG_EXAMPLE_PROV_TRANSPORT_SOFTAP */
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
@@ -323,31 +456,9 @@ void app_main(void)
     wifi_prov_mgr_config_t config = {
         /* What is the Provisioning Scheme that we want ?
          * wifi_prov_scheme_softap or wifi_prov_scheme_ble */
-#ifdef CONFIG_EXAMPLE_PROV_TRANSPORT_BLE
-        .scheme = wifi_prov_scheme_ble,
-#endif /* CONFIG_EXAMPLE_PROV_TRANSPORT_BLE */
-#ifdef CONFIG_EXAMPLE_PROV_TRANSPORT_SOFTAP
         .scheme = wifi_prov_scheme_softap,
-#endif /* CONFIG_EXAMPLE_PROV_TRANSPORT_SOFTAP */
-
-        /* Any default scheme specific event handler that you would
-         * like to choose. Since our example application requires
-         * neither BT nor BLE, we can choose to release the associated
-         * memory once provisioning is complete, or not needed
-         * (in case when device is already provisioned). Choosing
-         * appropriate scheme specific event handler allows the manager
-         * to take care of this automatically. This can be set to
-         * WIFI_PROV_EVENT_HANDLER_NONE when using wifi_prov_scheme_softap*/
-#ifdef CONFIG_EXAMPLE_PROV_TRANSPORT_BLE
-        .scheme_event_handler = WIFI_PROV_SCHEME_BLE_EVENT_HANDLER_FREE_BTDM
-#endif /* CONFIG_EXAMPLE_PROV_TRANSPORT_BLE */
-#ifdef CONFIG_EXAMPLE_PROV_TRANSPORT_SOFTAP
         .scheme_event_handler = WIFI_PROV_EVENT_HANDLER_NONE
-#endif /* CONFIG_EXAMPLE_PROV_TRANSPORT_SOFTAP */
     };
-
-    /* Initialize provisioning manager with the
-     * configuration parameters set above */
     ESP_ERROR_CHECK(wifi_prov_mgr_init(config));
 
     bool provisioned = false;
@@ -361,138 +472,39 @@ void app_main(void)
     /* If device is not yet provisioned start provisioning service */
     if (!provisioned) {
         ESP_LOGI(TAG, "Starting provisioning");
-
-        /* What is the Device Service Name that we want
-         * This translates to :
-         *     - Wi-Fi SSID when scheme is wifi_prov_scheme_softap
-         *     - device name when scheme is wifi_prov_scheme_ble
-         */
         char service_name[12];
         get_device_service_name(service_name, sizeof(service_name));
 
-#ifdef CONFIG_EXAMPLE_PROV_SECURITY_VERSION_1
-        /* What is the security level that we want (0, 1, 2):
-         *      - WIFI_PROV_SECURITY_0 is simply plain text communication.
-         *      - WIFI_PROV_SECURITY_1 is secure communication which consists of secure handshake
-         *          using X25519 key exchange and proof of possession (pop) and AES-CTR
-         *          for encryption/decryption of messages.
-         *      - WIFI_PROV_SECURITY_2 SRP6a based authentication and key exchange
-         *        + AES-GCM encryption/decryption of messages
-         */
-        wifi_prov_security_t security = WIFI_PROV_SECURITY_1;
 
-        /* Do we want a proof-of-possession (ignored if Security 0 is selected):
-         *      - this should be a string with length > 0
-         *      - NULL if not used
-         */
-        const char *pop = "abcd1234";
-
-        /* This is the structure for passing security parameters
-         * for the protocomm security 1.
-         */
-        wifi_prov_security1_params_t *sec_params = pop;
-
-        const char *username  = NULL;
-
-#elif CONFIG_EXAMPLE_PROV_SECURITY_VERSION_2
+#ifdef CONFIG_EXAMPLE_PROV_SECURITY_VERSION_2
         wifi_prov_security_t security = WIFI_PROV_SECURITY_2;
         /* The username must be the same one, which has been used in the generation of salt and verifier */
 
 #if CONFIG_EXAMPLE_PROV_SEC2_DEV_MODE
-        /* This pop field represents the password that will be used to generate salt and verifier.
-         * The field is present here in order to generate the QR code containing password.
-         * In production this password field shall not be stored on the device */
         const char *username  = EXAMPLE_PROV_SEC2_USERNAME;
         const char *pop = EXAMPLE_PROV_SEC2_PWD;
 #elif CONFIG_EXAMPLE_PROV_SEC2_PROD_MODE
-        /* The username and password shall not be embedded in the firmware,
-         * they should be provided to the user by other means.
-         * e.g. QR code sticker */
         const char *username  = NULL;
         const char *pop = NULL;
 #endif
-        /* This is the structure for passing security parameters
-         * for the protocomm security 2.
-         * If dynamically allocated, sec2_params pointer and its content
-         * must be valid till WIFI_PROV_END event is triggered.
-         */
         wifi_prov_security2_params_t sec2_params = {};
 
         ESP_ERROR_CHECK(example_get_sec2_salt(&sec2_params.salt, &sec2_params.salt_len));
         ESP_ERROR_CHECK(example_get_sec2_verifier(&sec2_params.verifier, &sec2_params.verifier_len));
-
         wifi_prov_security2_params_t *sec_params = &sec2_params;
 #endif
-        /* What is the service key (could be NULL)
-         * This translates to :
-         *     - Wi-Fi password when scheme is wifi_prov_scheme_softap
-         *          (Minimum expected length: 8, maximum 64 for WPA2-PSK)
-         *     - simply ignored when scheme is wifi_prov_scheme_ble
-         */
         const char *service_key = NULL;
-
-#ifdef CONFIG_EXAMPLE_PROV_TRANSPORT_BLE
-        /* This step is only useful when scheme is wifi_prov_scheme_ble. This will
-         * set a custom 128 bit UUID which will be included in the BLE advertisement
-         * and will correspond to the primary GATT service that provides provisioning
-         * endpoints as GATT characteristics. Each GATT characteristic will be
-         * formed using the primary service UUID as base, with different auto assigned
-         * 12th and 13th bytes (assume counting starts from 0th byte). The client side
-         * applications must identify the endpoints by reading the User Characteristic
-         * Description descriptor (0x2901) for each characteristic, which contains the
-         * endpoint name of the characteristic */
-        uint8_t custom_service_uuid[] = {
-            /* LSB <---------------------------------------
-             * ---------------------------------------> MSB */
-            0xb4, 0xdf, 0x5a, 0x1c, 0x3f, 0x6b, 0xf4, 0xbf,
-            0xea, 0x4a, 0x82, 0x03, 0x04, 0x90, 0x1a, 0x02,
-        };
-
-        /* If your build fails with linker errors at this point, then you may have
-         * forgotten to enable the BT stack or BTDM BLE settings in the SDK (e.g. see
-         * the sdkconfig.defaults in the example project) */
-        wifi_prov_scheme_ble_set_service_uuid(custom_service_uuid);
-#endif /* CONFIG_EXAMPLE_PROV_TRANSPORT_BLE */
-
-        /* An optional endpoint that applications can create if they expect to
-         * get some additional custom data during provisioning workflow.
-         * The endpoint name can be anything of your choice.
-         * This call must be made before starting the provisioning.
-         */
         wifi_prov_mgr_endpoint_create("custom-data");
-
-        /* Do not stop and de-init provisioning even after success,
-         * so that we can restart it later. */
-#ifdef CONFIG_EXAMPLE_REPROVISIONING
-        wifi_prov_mgr_disable_auto_stop(1000);
-#endif
         /* Start provisioning service */
         ESP_ERROR_CHECK(wifi_prov_mgr_start_provisioning(security, (const void *) sec_params, service_name, service_key));
-
-        /* The handler for the optional endpoint created above.
-         * This call must be made after starting the provisioning, and only if the endpoint
-         * has already been created above.
-         */
         wifi_prov_mgr_endpoint_register("custom-data", custom_prov_data_handler, NULL);
-
-        /* Uncomment the following to wait for the provisioning to finish and then release
-         * the resources of the manager. Since in this case de-initialization is triggered
-         * by the default event loop handler, we don't need to call the following */
         // wifi_prov_mgr_wait();
         // wifi_prov_mgr_deinit();
-        /* Print QR code for provisioning */
-#ifdef CONFIG_EXAMPLE_PROV_TRANSPORT_BLE
-        wifi_prov_print_qr(service_name, username, pop, PROV_TRANSPORT_BLE);
-#else /* CONFIG_EXAMPLE_PROV_TRANSPORT_SOFTAP */
         wifi_prov_print_qr(service_name, username, pop, PROV_TRANSPORT_SOFTAP);
-#endif /* CONFIG_EXAMPLE_PROV_TRANSPORT_BLE */
+
     } else {
         ESP_LOGI(TAG, "Already provisioned, starting Wi-Fi STA");
-
-        /* We don't need the manager as device is already provisioned,
-         * so let's release it's resources */
         wifi_prov_mgr_deinit();
-
         /* Start Wi-Fi station */
         wifi_init_sta();
     }
@@ -501,23 +513,50 @@ void app_main(void)
     xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_EVENT, true, true, portMAX_DELAY);
 
     /* Start main application now */
-#if CONFIG_EXAMPLE_REPROVISIONING
-    while (1) {
-        for (int i = 0; i < 10; i++) {
-            ESP_LOGI(TAG, "Hello World1!");
-            vTaskDelay(1000 / portTICK_PERIOD_MS);
-        }
+     mqtt_app_start();
 
-        /* Resetting provisioning state machine to enable re-provisioning */
-        wifi_prov_mgr_reset_sm_state_for_reprovision();
+    // initialize Btn input
+    initBtnGpio();
 
-        /* Wait for Wi-Fi connection */
-        xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_EVENT, true, true, portMAX_DELAY);
+    //create a queue to handle gpio event from isr
+    evt_queue = xQueueCreate(10, sizeof(triggerSrc_t));
+
+    // start 5s timer
+    tmr = xTimerCreate("MyTimer", pdMS_TO_TICKS(interval), pdTRUE, ( void * )id, &ping);
+    if( xTimerStart(tmr, 10 ) != pdPASS ) {
+     printf("Timer start error");
     }
-#else
-     while (1) {
-        func();
-     }
-#endif
+    //start task
+    xTaskCreate(myTask, "myTask", 2048, NULL, 10, NULL);
+}
+
+
+
+
+
+
+
+
+
+
+
+static void mqtt_app_start(void)
+{
+  const esp_mqtt_client_config_t mqtt_cfg = {
+    .broker.address.uri = "mqtts://test.mosquitto.org:8884",
+    .broker.verification.certificate = (const char *)server_cert_pem_start,
+    .credentials = {
+      .authentication = {
+        .certificate = (const char *)client_cert_pem_start,
+        .key = (const char *)client_key_pem_start,
+      },
+    }
+  };
+
+    ESP_LOGI(TAG, "[APP] Free memory: %" PRIu32 " bytes", esp_get_free_heap_size());
+    client = esp_mqtt_client_init(&mqtt_cfg);
+    /* The last argument may be used to pass data to the event handler, in this example mqtt_event_handler */
+    esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
+    esp_mqtt_client_start(client);
 
 }
