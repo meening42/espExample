@@ -26,15 +26,6 @@ extern const uint8_t client_key_pem_end[] asm("_binary_client_key_end");
 extern const uint8_t server_cert_pem_start[] asm("_binary_mosquitto_org_crt_start");
 extern const uint8_t server_cert_pem_end[] asm("_binary_mosquitto_org_crt_end");
 
-
-static void mqtt_app_start(void);
-
-typedef enum  {
-  TRIGGER_BTN,
-  TRIGGER_TIMER,
-  TRIGGER_MQTT_REQUEST
-}triggerSrc_t;
-
 static QueueHandle_t evt_queue = NULL;
 
 static const char *TAG = "app";
@@ -111,7 +102,6 @@ static EventGroupHandle_t wifi_event_group;
 
 #define PROV_QR_VERSION         "v1"
 #define PROV_TRANSPORT_SOFTAP   "softap"
-#define PROV_TRANSPORT_BLE      "ble"
 #define QRCODE_BASE_URL         "https://espressif.github.io/esp-jumpstart/qrcode.html"
 
 /* Event handler for catching system events */
@@ -324,13 +314,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     }
 }
 
- esp_mqtt_client_handle_t client;
- temperature_sensor_handle_t temp_sensor = NULL;
-
-
-
+esp_mqtt_client_handle_t client;
+temperature_sensor_handle_t temp_sensor = NULL;
 TimerHandle_t tmr;
-int id = 1;
 int interval = 5000;
 
 void ping( TimerHandle_t xTimer )
@@ -378,6 +364,25 @@ static void IRAM_ATTR gpio_isr_handler(void* arg)
 {
     triggerSrc_t trigger = TRIGGER_BTN;
     xQueueSendFromISR(evt_queue, &trigger, NULL);
+}
+
+static void mqtt_app_start(void)
+{
+  const esp_mqtt_client_config_t mqtt_cfg = {
+    .broker.address.uri = "mqtts://test.mosquitto.org",
+    .broker.address.port = 8884,
+    .broker.verification.certificate = (const char *)server_cert_pem_start,
+    .credentials = {
+      .authentication = {
+        .certificate = (const char *)client_cert_pem_start,
+        .key = (const char *)client_key_pem_start,
+      },
+    }
+  };
+    client = esp_mqtt_client_init(&mqtt_cfg);
+    /* The last argument may be used to pass data to the event handler, in this example mqtt_event_handler */
+    esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
+    esp_mqtt_client_start(client);
 }
 
 
@@ -485,29 +490,11 @@ void app_main(void)
     evt_queue = xQueueCreate(10, sizeof(triggerSrc_t));
 
     // start 5s t
+    int id = 1;
     tmr = xTimerCreate("MyTimer", pdMS_TO_TICKS(interval), pdTRUE, ( void * )id, &ping);
     if( xTimerStart(tmr, 10 ) != pdPASS ) {
      printf("Timer start error");
     }
     //start task
     xTaskCreate(myTask, "myTask", 2048, NULL, 10, NULL);
-}
-
-
-static void mqtt_app_start(void)
-{
-  const esp_mqtt_client_config_t mqtt_cfg = {
-    .broker.address.uri = "mqtts://test.mosquitto.org:8884",
-    .broker.verification.certificate = (const char *)server_cert_pem_start,
-    .credentials = {
-      .authentication = {
-        .certificate = (const char *)client_cert_pem_start,
-        .key = (const char *)client_key_pem_start,
-      },
-    }
-  };
-    client = esp_mqtt_client_init(&mqtt_cfg);
-    /* The last argument may be used to pass data to the event handler, in this example mqtt_event_handler */
-    esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
-    esp_mqtt_client_start(client);
 }
