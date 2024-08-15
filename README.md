@@ -1,16 +1,18 @@
 # ESP example (MQTT, btn, temperature, Wi-Fi Provisioning)
 
+Temperature data is periodically published every 5 seconds. Additionaly data is published by button press or upon receiving a request from MQTT. 
+
 
 
 ## How to use example
-### Hardware 
+### Hardware needed
 * ESP32-C3-DevKitM-1
-* On board button (GPIO 9)
-* Using built-in temperature sensor
+    * On board button (GPIO 9)
+    * Using built-in temperature sensor
 
 ### Application Required
 
-Provisioning applications are available for various platforms. See below
+Tested with andorid ``ESP SoftAP Provisioning`` app. Other provisioning applications are available for various platforms. See below
 
 #### Platform : Android
 
@@ -24,7 +26,7 @@ For iOS, a provisioning application along with source code is available on GitHu
 
 To install the dependency packages needed, please refer to the top level [README file](../../README.md#running-test-python-script-pytest).
 
-`esp_prov` supports BLE and SoftAP transport for Linux, MacOS and Windows platforms. For BLE, however, if dependencies are not met, the script falls back to console mode and requires another application through which the communication can take place. The `esp_prov` console will guide you through the provisioning process of locating the correct BLE GATT services and characteristics, the values to write, and input read values.
+`esp_prov` supports BLE and SoftAP transport for Linux, MacOS and Windows platforms. 
 
 
 ### Build and Flash
@@ -34,10 +36,6 @@ Build the project and flash it to the board, then run monitor tool to view seria
 ```
 idf.py -p PORT flash monitor
 ```
-
-(To exit the serial monitor, type ``Ctrl-]``.)
-
-See the Getting Started Guide for full steps to configure and use ESP-IDF to build projects.
 
 ### MQTT broker settings:
 
