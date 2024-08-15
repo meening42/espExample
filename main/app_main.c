@@ -465,8 +465,6 @@ void app_main(void)
         /* Start provisioning service */
         ESP_ERROR_CHECK(wifi_prov_mgr_start_provisioning(security, (const void *) sec_params, service_name, service_key));
         wifi_prov_mgr_endpoint_register("custom-data", custom_prov_data_handler, NULL);
-        // wifi_prov_mgr_wait();
-        // wifi_prov_mgr_deinit();
         wifi_prov_print_qr(service_name, username, pop, PROV_TRANSPORT_SOFTAP);
 
     } else {
@@ -483,18 +481,18 @@ void app_main(void)
      mqtt_app_start();
 
     initBtnGpio();
-    //install gpio isr service
+    // Install gpio isr service
     gpio_install_isr_service(ESP_INTR_FLAG_DEFAULT);
-    //hook isr handler for specific gpio pin
+    // Hook isr handler for specific gpio pin
     gpio_isr_handler_add(GPIO_INPUT_IO_0, gpio_isr_handler, (void*) GPIO_INPUT_IO_0);
     evt_queue = xQueueCreate(10, sizeof(triggerSrc_t));
 
-    // start 5s t
+    // Start 5s t
     int id = 1;
     tmr = xTimerCreate("MyTimer", pdMS_TO_TICKS(interval), pdTRUE, ( void * )id, &ping);
     if( xTimerStart(tmr, 10 ) != pdPASS ) {
      printf("Timer start error");
     }
-    //start task
+    // Start task
     xTaskCreate(myTask, "myTask", 2048, NULL, 10, NULL);
 }

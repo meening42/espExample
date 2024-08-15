@@ -12,18 +12,13 @@ Temperature data is periodically published every 5 seconds. Additionaly data is 
 
 ### Application Required
 
-Tested with andorid ``ESP SoftAP Provisioning`` app. Other provisioning applications are available for various platforms. See below
+Tested with Android ``ESP SoftAP Provisioning`` app. Other provisioning applications are available for various platforms. See below
 
 #### Platform : Android
-
 For Android, a provisioning application along with source code is available on GitHub : [esp-idf-provisioning-android](https://github.com/espressif/esp-idf-provisioning-android)
-
 #### Platform : iOS
-
 For iOS, a provisioning application along with source code is available on GitHub : [esp-idf-provisioning-ios](https://github.com/espressif/esp-idf-provisioning-ios)
-
 #### Platform : Linux / Windows / macOS
-
 To install the dependency packages needed, please refer to the top level [README file](../../README.md#running-test-python-script-pytest).
 
 `esp_prov` supports BLE and SoftAP transport for Linux, MacOS and Windows platforms. 
